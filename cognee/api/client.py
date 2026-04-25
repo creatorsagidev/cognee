@@ -53,6 +53,44 @@ from cognee.modules.users.methods.get_authenticated_user import REQUIRE_AUTHENTI
 setup_logging()
 logger = get_logger()
 
+# Community-adapter preload hook (cagi fork patch).
+#
+# Cognee discovers adapters via runtime mutation of the supported_databases
+# dicts (see cognee/infrastructure/databases/{graph,vector}/use_*_adapter.py),
+# NOT via Python entry points. Adapters register themselves as side-effects of
+# being imported — but `python -m uvicorn cognee.api.client:app` (the command
+# that cognee.start_ui() spawns for the backend, and the canonical way users
+# run the API server) only imports cognee, never the community adapter
+# packages. Result: GRAPH_DATABASE_PROVIDER=falkor / VECTOR_DB_PROVIDER=falkor
+# fails with `OSError: Unsupported vector database provider: falkor` during
+# the FastAPI lifespan startup, even though the community-adapter package is
+# installed and the env vars are set correctly.
+#
+# This block reads COGNEE_PROVIDERS_PRELOAD (comma-separated package names)
+# and imports each package at module load time, BEFORE the FastAPI app is
+# constructed and its lifespan runs. Each package's import fires its
+# register.py side effects, populating supported_databases.
+#
+# No-op when the env var is unset, so this preserves vanilla cognee behavior
+# for users with no community adapters installed.
+_providers_preload = os.getenv("COGNEE_PROVIDERS_PRELOAD", "").strip()
+if _providers_preload:
+    import importlib
+
+    for _pkg in _providers_preload.split(","):
+        _pkg = _pkg.strip()
+        if not _pkg:
+            continue
+        try:
+            importlib.import_module(_pkg)
+            logger.info(f"COGNEE_PROVIDERS_PRELOAD: imported {_pkg}")
+        except Exception as _e:
+            logger.error(
+                f"COGNEE_PROVIDERS_PRELOAD: failed to import {_pkg}: {_e}. "
+                "If this adapter provides a custom DB provider, related "
+                "operations will fail at runtime with `Unsupported provider`."
+            )
+
 if os.getenv("ENV", "prod") == "prod":
     try:
         import sentry_sdk
