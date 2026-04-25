@@ -261,27 +261,50 @@ def find_frontend_path() -> Optional[Path]:
     """
     Find the cognee-frontend directory.
     Checks both development location and cached download location.
+
+    cagi fork patch: set COGNEE_FRONTEND_FORCE_CACHED=true to skip the
+    development-paths check and go straight to the cached download location.
+    Useful when cognee is installed editable from a checkout that contains its
+    own cognee-frontend/ subdir, but the consumer wants the cached copy
+    (e.g., because the cached copy has been patched / version-pinned by a
+    downstream recipe). Without this, find_frontend_path() always prefers the
+    in-tree cognee-frontend/ over the cache, silently bypassing any consumer
+    patches applied to the cache.
     """
     current_file = Path(__file__)
 
-    # First, try development paths (for contributors/developers)
-    dev_search_paths = [
-        current_file.parents[4] / "cognee-frontend",  # from cognee/api/v1/ui/ui.py to project root
-        current_file.parents[3] / "cognee-frontend",  # fallback path
-        current_file.parents[2] / "cognee-frontend",  # another fallback
-    ]
+    force_cached = os.environ.get("COGNEE_FRONTEND_FORCE_CACHED", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
-    for path in dev_search_paths:
-        if path.exists() and (path / "package.json").exists():
-            logger.debug(f"Found development frontend at: {path}")
-            return path
+    if not force_cached:
+        # First, try development paths (for contributors/developers)
+        dev_search_paths = [
+            current_file.parents[4] / "cognee-frontend",  # from cognee/api/v1/ui/ui.py to project root
+            current_file.parents[3] / "cognee-frontend",  # fallback path
+            current_file.parents[2] / "cognee-frontend",  # another fallback
+        ]
 
-    # Then try cached download location (for pip-installed users)
+        for path in dev_search_paths:
+            if path.exists() and (path / "package.json").exists():
+                logger.debug(f"Found development frontend at: {path}")
+                return path
+
+    # Then try cached download location (for pip-installed users, or when
+    # COGNEE_FRONTEND_FORCE_CACHED forced us to skip the dev paths above)
     cache_dir = get_frontend_cache_dir()
     cached_frontend = cache_dir / "frontend"
 
     if cached_frontend.exists() and (cached_frontend / "package.json").exists():
-        logger.debug(f"Found cached frontend at: {cached_frontend}")
+        if force_cached:
+            logger.info(
+                "COGNEE_FRONTEND_FORCE_CACHED set; using cached frontend at: "
+                f"{cached_frontend}"
+            )
+        else:
+            logger.debug(f"Found cached frontend at: {cached_frontend}")
         return cached_frontend
 
     return None
