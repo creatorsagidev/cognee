@@ -218,7 +218,23 @@ async def ingest_data(
                     await session.merge(data_point)
 
             if len(dataset_new_data_points) > 0:
-                dataset.data.extend(dataset_new_data_points)
+                # These Data rows already exist in the relational store (they
+                # were found by the lookup session at lines 133-136) but are
+                # not yet associated with THIS dataset. The lookup session
+                # closed, so the data_points are detached. If we extend the
+                # dataset.data collection with detached objects, SQLAlchemy's
+                # autoflush treats them as new ORM entities and emits INSERT
+                # statements → asyncpg.exceptions.UniqueViolationError on
+                # `data_pkey`. Merge them into the current session first so
+                # SQLAlchemy treats them as managed (UPSERT semantics), THEN
+                # extend the association collection. Same fix shape as the
+                # existing_data_points branch above.
+                merged_dataset_new_data_points = []
+                for data_point in dataset_new_data_points:
+                    merged_dataset_new_data_points.append(
+                        await session.merge(data_point)
+                    )
+                dataset.data.extend(merged_dataset_new_data_points)
 
             await session.merge(dataset)
 
