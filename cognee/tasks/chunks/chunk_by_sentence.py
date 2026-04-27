@@ -2,6 +2,9 @@ from uuid import uuid4, UUID
 from typing import Optional, Iterator, Tuple
 from .chunk_by_word import chunk_by_word
 from cognee.infrastructure.databases.vector.embeddings import get_embedding_engine
+from cognee.shared.logging_utils import get_logger
+
+logger = get_logger("chunk_by_sentence")
 
 
 def get_word_size(word: str) -> int:
@@ -63,6 +66,23 @@ def chunk_by_sentence(
     for word, word_type in chunk_by_word(data):
         word_size = get_word_size(word)
 
+        # Skip individual words that exceed maximum_size — typically embedded
+        # base64-encoded media in markdown content (e.g.,
+        # `data:image/png;base64,iVBORw0...`), which has no internal whitespace
+        # so the tokenizer treats the whole blob as one "word" longer than the
+        # 8191-token chunk limit. Embedding it would fail downstream anyway;
+        # we drop the unembeddable token and continue chunking the rest of
+        # the document. Previously this raised ValueError and aborted the
+        # pipeline run for the whole document.
+        if maximum_size and word_size > maximum_size:
+            preview = word[:64].replace("\n", " ")
+            logger.warning(
+                "chunk_by_sentence: skipping oversized word "
+                f"(size={word_size} tokens > maximum_size={maximum_size}); "
+                f"preview={preview!r}..."
+            )
+            continue
+
         if word_type in ["paragraph_end", "sentence_end"]:
             word_type_state = word_type
         else:
@@ -90,7 +110,14 @@ def chunk_by_sentence(
 
     if len(sentence) > 0:
         if maximum_size and sentence_size > maximum_size:
-            raise ValueError(f"Input word {word} longer than chunking size {maximum_size}.")
+            # Should be unreachable now that the loop skips oversized words at
+            # entry, but keep a defensive guard: log and trim rather than
+            # raise. A raise here aborts the entire document's pipeline run,
+            # which we explicitly don't want for one stray oversized chunk.
+            logger.warning(
+                "chunk_by_sentence: trailing sentence_size "
+                f"({sentence_size}) > maximum_size ({maximum_size}); yielding anyway."
+            )
 
         section_end = "sentence_cut" if word_type_state == "word" else word_type_state
         yield (
